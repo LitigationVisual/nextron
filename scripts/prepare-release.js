@@ -13,7 +13,13 @@ fs.ensureDirSync(releaseDir)
 fs.ensureDirSync(path.join(releaseDir, 'bin'))
 
 // 复制必要的文件
-const filesToCopy = ['LICENSE', 'README.md', 'babel.js', 'package.json']
+const filesToCopy = [
+  'LICENSE',
+  'README.md',
+  'babel.js',
+  'package.json',
+  'pnpm-lock.yaml',
+]
 
 filesToCopy.forEach((file) => {
   fs.copySync(path.join(__dirname, '..', file), path.join(releaseDir, file))
