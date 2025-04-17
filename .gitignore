@@ -13,3 +13,5 @@ examples/**/renderer/next-env.d.ts
 # misc
 .idea
 .DS_Store
+
+release-temp/

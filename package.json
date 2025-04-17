@@ -42,7 +42,7 @@
     "lint:prettier": "prettier --check .",
     "prebuild": "rimraf bin",
     "build": "rollup -c --bundleConfigAsCjs",
-    "deploy": "npm run build && gh-pages -d bin -b releases",
+    "deploy": "npm run build && node scripts/prepare-release.js && gh-pages -d release-temp -b releases",
     "prepublishOnly": "NODE_ENV=production npm run build",
     "prepare": "husky"
   },
