@@ -69,11 +69,42 @@ const execaOptions: execa.Options = {
     }
 
     logger.info('Building main process')
-    await execa(
-      'node',
-      [path.join(__dirname, 'webpack.config.js')],
-      execaOptions
-    )
+    // 使用tsup替代webpack打包主进程
+    // 检查用户项目中是否有tsup.config.ts文件
+    const tsupConfigPath = path.join(cwd, 'tsup.config.ts')
+    const tsupConfigExists = await fs.pathExists(tsupConfigPath)
+
+    if (tsupConfigExists) {
+      // 如果用户项目有自定义的tsup配置，使用它
+      await execa('tsup', ['--config', tsupConfigPath], {
+        ...execaOptions,
+        env: { ...process.env, NODE_ENV: 'production' },
+      })
+    } else {
+      // 如果没有，使用默认参数
+      await execa(
+        'tsup',
+        [
+          'main/background.ts',
+          'main/preload.ts',
+          '--format',
+          'cjs',
+          '--target',
+          'node16',
+          '--outDir',
+          'app',
+          '--minify',
+          '--external',
+          'electron',
+          '--external',
+          'electron-devtools-installer',
+        ],
+        {
+          ...execaOptions,
+          env: { ...process.env, NODE_ENV: 'production' },
+        }
+      )
+    }
 
     if (args['--no-pack']) {
       logger.info('Skip packaging...')
