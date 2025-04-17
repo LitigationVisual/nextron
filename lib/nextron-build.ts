@@ -5,7 +5,7 @@ import chalk from 'chalk'
 import execa from 'execa'
 import * as logger from './logger'
 import { getNextronConfig } from './configs/getNextronConfig'
-import { useExportCommand } from './configs/useExportCommand'
+import { useExportCommand as checkUseExportCommand } from './configs/useExportCommand'
 
 const args = arg({
   '--mac': Boolean,
@@ -19,6 +19,7 @@ const args = arg({
   '--config': String,
   '--publish': String,
   '--no-pack': Boolean,
+  '--app-router': Boolean,
 })
 
 const cwd = process.cwd()
@@ -40,12 +41,31 @@ const execaOptions: execa.Options = {
 
     logger.info('Building renderer process')
     await execa('next', ['build', path.join(cwd, rendererSrcDir)], execaOptions)
-    if (await useExportCommand()) {
-      await execa(
-        'next',
-        ['export', '-o', appDir, path.join(cwd, rendererSrcDir)],
-        execaOptions
+
+    // Check if using App Router mode (standalone output)
+    const isAppRouter = args['--app-router'] || (await isUsingAppRouter())
+
+    if (isAppRouter) {
+      logger.info('Detected App Router mode with standalone output')
+      // For Next.js App Router with standalone output, we need to copy files differently
+      await fs.copy(path.join(cwd, rendererSrcDir, '.next/standalone'), appDir)
+      await fs.copy(
+        path.join(cwd, rendererSrcDir, '.next/static'),
+        path.join(appDir, '.next/static')
       )
+      await fs.copy(
+        path.join(cwd, rendererSrcDir, 'public'),
+        path.join(appDir, 'public')
+      )
+    } else {
+      // Traditional Pages Router approach with export command
+      if (await useExportCommand()) {
+        await execa(
+          'next',
+          ['export', '-o', appDir, path.join(cwd, rendererSrcDir)],
+          execaOptions
+        )
+      }
     }
 
     logger.info('Building main process')
@@ -96,4 +116,46 @@ function createBuilderArgs() {
   args['--universal'] && results.push('--universal')
 
   return results
+}
+
+// Check if the Next.js project is using App Router with standalone output
+async function isUsingAppRouter(): Promise<boolean> {
+  try {
+    const rendererDir = path.join(cwd, rendererSrcDir)
+    const nextConfigPath = path.join(rendererDir, 'next.config.js')
+    const nextConfigMjsPath = path.join(rendererDir, 'next.config.mjs')
+
+    // Check if next.config.js or next.config.mjs exists
+    const configPath = fs.existsSync(nextConfigPath)
+      ? nextConfigPath
+      : fs.existsSync(nextConfigMjsPath)
+        ? nextConfigMjsPath
+        : null
+
+    if (!configPath) return false
+
+    // Read the config file content
+    const configContent = fs.readFileSync(configPath, 'utf8')
+
+    // Check if the config has 'output: "standalone"' or 'output: standalone'
+    return (
+      configContent.includes('output:') &&
+      (configContent.includes('"standalone"') ||
+        configContent.includes("'standalone'") ||
+        configContent.includes('output: standalone'))
+    )
+  } catch (error) {
+    logger.info('Error checking App Router mode: ' + error)
+    return false
+  }
+}
+
+// For backward compatibility
+async function useExportCommand() {
+  try {
+    return await checkUseExportCommand()
+  } catch (error) {
+    logger.info('Error checking export command: ' + error)
+    return true
+  }
 }
