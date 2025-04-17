@@ -5,7 +5,7 @@ import chalk from 'chalk'
 import execa from 'execa'
 import * as logger from './logger'
 import { getNextronConfig } from './configs/getNextronConfig'
-import { useExportCommand } from './configs/useExportCommand'
+import { useExportCommand as checkUseExportCommand } from './configs/useExportCommand'
 
 const args = arg({
   '--mac': Boolean,
@@ -19,6 +19,7 @@ const args = arg({
   '--config': String,
   '--publish': String,
   '--no-pack': Boolean,
+  '--app-router': Boolean,
 })
 
 const cwd = process.cwd()
@@ -40,20 +41,70 @@ const execaOptions: execa.Options = {
 
     logger.info('Building renderer process')
     await execa('next', ['build', path.join(cwd, rendererSrcDir)], execaOptions)
-    if (await useExportCommand()) {
-      await execa(
-        'next',
-        ['export', '-o', appDir, path.join(cwd, rendererSrcDir)],
-        execaOptions
+
+    // Check if using App Router mode (standalone output)
+    const isAppRouter = args['--app-router'] || (await isUsingAppRouter())
+
+    if (isAppRouter) {
+      logger.info('Detected App Router mode with standalone output')
+      // For Next.js App Router with standalone output, we need to copy files differently
+      await fs.copy(path.join(cwd, rendererSrcDir, '.next/standalone'), appDir)
+      await fs.copy(
+        path.join(cwd, rendererSrcDir, '.next/static'),
+        path.join(appDir, '.next/static')
       )
+      await fs.copy(
+        path.join(cwd, rendererSrcDir, 'public'),
+        path.join(appDir, 'public')
+      )
+    } else {
+      // Traditional Pages Router approach with export command
+      if (await useExportCommand()) {
+        await execa(
+          'next',
+          ['export', '-o', appDir, path.join(cwd, rendererSrcDir)],
+          execaOptions
+        )
+      }
     }
 
     logger.info('Building main process')
-    await execa(
-      'node',
-      [path.join(__dirname, 'webpack.config.js')],
-      execaOptions
-    )
+    // 使用tsup替代webpack打包主进程
+    // 检查用户项目中是否有tsup.config.ts文件
+    const tsupConfigPath = path.join(cwd, 'tsup.config.ts')
+    const tsupConfigExists = await fs.pathExists(tsupConfigPath)
+
+    if (tsupConfigExists) {
+      // 如果用户项目有自定义的tsup配置，使用它
+      await execa('tsup', ['--config', tsupConfigPath], {
+        ...execaOptions,
+        env: { ...process.env, NODE_ENV: 'production' },
+      })
+    } else {
+      // 如果没有，使用默认参数
+      await execa(
+        'tsup',
+        [
+          'main/background.ts',
+          'main/preload.ts',
+          '--format',
+          'cjs',
+          '--target',
+          'node16',
+          '--outDir',
+          'app',
+          '--minify',
+          '--external',
+          'electron',
+          '--external',
+          'electron-devtools-installer',
+        ],
+        {
+          ...execaOptions,
+          env: { ...process.env, NODE_ENV: 'production' },
+        }
+      )
+    }
 
     if (args['--no-pack']) {
       logger.info('Skip packaging...')
@@ -96,4 +147,46 @@ function createBuilderArgs() {
   args['--universal'] && results.push('--universal')
 
   return results
+}
+
+// Check if the Next.js project is using App Router with standalone output
+async function isUsingAppRouter(): Promise<boolean> {
+  try {
+    const rendererDir = path.join(cwd, rendererSrcDir)
+    const nextConfigPath = path.join(rendererDir, 'next.config.js')
+    const nextConfigMjsPath = path.join(rendererDir, 'next.config.mjs')
+
+    // Check if next.config.js or next.config.mjs exists
+    const configPath = fs.existsSync(nextConfigPath)
+      ? nextConfigPath
+      : fs.existsSync(nextConfigMjsPath)
+        ? nextConfigMjsPath
+        : null
+
+    if (!configPath) return false
+
+    // Read the config file content
+    const configContent = fs.readFileSync(configPath, 'utf8')
+
+    // Check if the config has 'output: "standalone"' or 'output: standalone'
+    return (
+      configContent.includes('output:') &&
+      (configContent.includes('"standalone"') ||
+        configContent.includes("'standalone'") ||
+        configContent.includes('output: standalone'))
+    )
+  } catch (error) {
+    logger.info('Error checking App Router mode: ' + error)
+    return false
+  }
+}
+
+// For backward compatibility
+async function useExportCommand() {
+  try {
+    return await checkUseExportCommand()
+  } catch (error) {
+    logger.info('Error checking export command: ' + error)
+    return true
+  }
 }

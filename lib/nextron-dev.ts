@@ -1,11 +1,12 @@
 import arg from 'arg'
 import execa from 'execa'
-import webpack from 'webpack'
+import { EventEmitter } from 'node:events'
 import * as logger from './logger'
 import { getNextronConfig } from './configs/getNextronConfig'
-import { config } from './configs/webpack.config.development'
 import { waitForPort } from 'get-port-please'
 import type { ChildProcess } from 'child_process'
+import path from 'path'
+import fs from 'fs'
 
 const args = arg({
   '--renderer-port': Number,
@@ -62,9 +63,9 @@ const execaOptions: execa.Options = {
 
 ;(async () => {
   let firstCompile = true
-  let watching: webpack.Watching
   let mainProcess: ChildProcess
   let rendererProcess: ChildProcess
+  let tsupProcess: ChildProcess
 
   const startMainProcess = () => {
     logger.info(
@@ -98,9 +99,63 @@ const execaOptions: execa.Options = {
     return child
   }
 
+  const startTsupWatcher = () => {
+    logger.info('Starting tsup in watch mode for main process')
+
+    // 检查用户项目中是否有tsup.config.ts文件
+    const tsupConfigPath = path.join(process.cwd(), 'tsup.config.ts')
+    const tsupConfigExists = fs.existsSync(tsupConfigPath)
+
+    let tsupArgs = ['--watch']
+
+    if (tsupConfigExists) {
+      // 如果用户项目有自定义的tsup配置，使用它
+      tsupArgs = [...tsupArgs, '--config', tsupConfigPath]
+    } else {
+      // 如果没有，使用默认参数
+      tsupArgs = [
+        ...tsupArgs,
+        'main/background.ts',
+        'main/preload.ts',
+        '--format',
+        'cjs',
+        '--target',
+        'node16',
+        '--outDir',
+        'app',
+        '--external',
+        'electron',
+        '--external',
+        'electron-devtools-installer',
+      ]
+    }
+
+    const child = execa('tsup', tsupArgs, execaOptions)
+
+    // 创建一个事件派发器来监听tsup的构建完成事件
+    const eventEmitter = new EventEmitter()
+
+    child.stdout?.on('data', (data) => {
+      const output = data.toString()
+      if (
+        output.includes('Build success') ||
+        output.includes('watching for changes')
+      ) {
+        // 当tsup完成构建时触发事件
+        eventEmitter.emit('build-complete')
+      }
+    })
+
+    child.on('close', () => {
+      process.exit(0)
+    })
+
+    return { process: child, events: eventEmitter }
+  }
+
   const killWholeProcess = () => {
-    if (watching) {
-      watching.close(() => {})
+    if (tsupProcess) {
+      tsupProcess.kill()
     }
     if (mainProcess) {
       mainProcess.kill()
@@ -128,30 +183,26 @@ const execaOptions: execa.Options = {
     process.exit(1)
   })
 
-  // wait until main process is ready
-  await new Promise<void>((resolve) => {
-    const compiler = webpack(config)
-    watching = compiler.watch({}, (error) => {
-      if (error) {
-        console.error(error.stack || error)
+  // 启动tsup监视主进程代码
+  const { process: tsup, events: tsupEvents } = startTsupWatcher()
+  tsupProcess = tsup
+
+  // 监听tsup构建完成事件
+  tsupEvents.on('build-complete', () => {
+    if (!args['--run-only']) {
+      if (!firstCompile && mainProcess) {
+        mainProcess.kill()
       }
+      startMainProcess()
 
-      if (!args['--run-only']) {
-        if (!firstCompile && mainProcess) {
-          mainProcess.kill()
-        }
-        startMainProcess()
-
-        if (firstCompile) {
-          firstCompile = false
-        }
+      if (firstCompile) {
+        firstCompile = false
       }
-
-      resolve()
-    })
+    }
   })
 
   if (args['--run-only']) {
-    startMainProcess()
+    // 如果只运行，等待第一次构建完成后启动主进程
+    tsupEvents.once('build-complete', startMainProcess)
   }
 })()

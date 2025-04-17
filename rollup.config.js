@@ -32,18 +32,8 @@ const cliConfig = (src) => ({
   ...coreConfig,
 })
 
-const config = (src, dist) => ({
-  input: src,
-  output: {
-    file: dist,
-    format: 'cjs',
-  },
-  ...coreConfig,
-})
-
 export default [
   cliConfig('lib/nextron.ts'),
   cliConfig('lib/nextron-dev.ts'),
   cliConfig('lib/nextron-build.ts'),
-  config('lib/configs/webpack.config.production.ts', 'bin/webpack.config.js'),
 ]
